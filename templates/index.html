@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job Restart Manager</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔄 Job Restart Manager</h1>
+            <p>Manage and restart failed backup jobs</p>
+        </header>
+
+        <!-- Tab Navigation -->
+        <nav class="tab-navigation">
+            <button class="tab-btn active" data-tab="jobs">🔄 Jobs (Rsync)</button>
+            <button class="tab-btn" data-tab="rclone">☁️ Rclone</button>
+            <button class="tab-btn" data-tab="guide">📖 Usage Guide</button>
+        </nav>
+
+        <main>
+            <!-- Tab Content -->
+            <div class="tab-content">
+                <!-- Jobs Tab -->
+                <div id="jobs-tab" class="tab-pane active">
+                    <!-- Action Buttons -->
+                    <section class="actions">
+                <button id="restart-all-failed" class="btn btn-primary">
+                    🔄 Restart All Failed Jobs
+                </button>
+                <button id="refresh-jobs" class="btn btn-secondary">
+                    🔄 Refresh
+                </button>
+                <button id="create-job" class="btn btn-success">
+                    ➕ Create New Job
+                </button>
+            </section>
+
+            <!-- Failed Jobs Summary -->
+            <section class="summary">
+                <div class="summary-card">
+                    <h3>Failed Jobs</h3>
+                    <span class="count" id="failed-count">{{ failed_jobs|length }}</span>
+                </div>
+                <div class="summary-card">
+                    <h3>Running Jobs</h3>
+                    <span class="count" id="running-count">{{ running_jobs|length }}</span>
+                </div>
+                <div class="summary-card">
+                    <h3>Total Jobs</h3>
+                    <span class="count" id="total-count">{{ jobs|length }}</span>
+                </div>
+            </section>
+
+            <!-- Job List -->
+            <section class="jobs">
+                <h2>Jobs</h2>
+                <div id="job-list">
+                    {% for job in jobs %}
+                    <div class="job-card" data-job-id="{{ job.id }}">
+                        <div class="job-header">
+                            <h3>{{ job.name }}</h3>
+                            <span class="status status-{{ job.status }}">{{ job.status|title }}</span>
+                        </div>
+                        
+                        <div class="job-details">
+                            <div class="job-info">
+                                <div class="info-row">
+                                    <strong>Source:</strong> {{ job.source }}
+                                </div>
+                                <div class="info-row">
+                                    <strong>Destination:</strong> {{ job.destination }}
+                                </div>
+                                <div class="info-row">
+                                    <strong>Retries:</strong> {{ job.retry_count }}/{{ job.max_retries }}
+                                </div>
+                                {% if job.error_message %}
+                                <div class="info-row error">
+                                    <strong>Error:</strong> {{ job.error_message }}
+                                </div>
+                                {% endif %}
+                            </div>
+                            
+                            <div class="job-actions">
+                                {% if job.status == 'failed' %}
+                                <button class="btn btn-small btn-primary" onclick="restartJob('{{ job.id }}')">
+                                    🔄 Restart
+                                </button>
+                                {% endif %}
+                                
+                                {% if job.id in running_jobs %}
+                                <button class="btn btn-small btn-danger" onclick="stopJob('{{ job.id }}')">
+                                    ⏹️ Stop
+                                </button>
+                                {% endif %}
+                                
+                                <button class="btn btn-small btn-secondary" onclick="viewLogs('{{ job.id }}')">
+                                    📋 Logs
+                                </button>
+                                
+                                <button class="btn btn-small btn-danger" onclick="deleteJob('{{ job.id }}')">
+                                    🗑️ Delete
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Progress Bar -->
+                        {% if job.progress %}
+                        <div class="progress-container">
+                            <div class="progress-bar" style="width: {{ job.progress.get('percent', 0) }}%"></div>
+                            <span class="progress-text">{{ job.progress.get('percent', 0) }}%</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+            </section>
+                </div>
+                
+                <!-- Rclone Tab -->
+                <div id="rclone-tab" class="tab-pane">
+                    <section class="rclone-actions">
+                        <button id="create-rclone-operation" class="btn btn-success">
+                            ➕ New Rclone Operation
+                        </button>
+                        <button id="rclone-status" class="btn btn-secondary">
+                            📊 Rclone Status
+                        </button>
+                    </section>
+                    
+                    <section class="rclone-summary">
+                        <h2>Rclone Status</h2>
+                        <div id="rclone-status-info"></div>
+                    </section>
+                    
+                    <section class="rclone-operations">
+                        <h2>Rclone Operations</h2>
+                        <div id="rclone-operation-list"></div>
+                    </section>
+                </div>
+                
+                <!-- Usage Guide Tab -->
+                <div id="guide-tab" class="tab-pane">
+                    <section class="guide-content">
+                        <h2>📖 Rsync Usage Guide</h2>
+                        <p class="guide-intro">Choose the right rsync arguments for your use case. This guide helps you optimize performance and safety based on your specific scenario.</p>
+                        
+                        <div class="guide-section">
+                            <h3>🎯 Common Use Cases</h3>
+                            <table class="guide-table">
+                                <thead>
+                                    <tr>
+                                        <th>Use Case</th>
+                                        <th>Recommended Arguments</th>
+                                        <th>Why These Arguments?</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><strong>Local Backup</strong><br><small>Same computer, different drives</small></td>
+                                        <td><code>-avhP --stats</code></td>
+                                        <td>
+                                            • <strong>No compression</strong> - Local drives are fast enough<br>
+                                            • <strong>-P</strong> - Shows progress and keeps partial files<br>
+                                            • <strong>--stats</strong> - Verify what was transferred
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Network Backup</strong><br><small>To NAS or remote server</small></td>
+                                        <td><code>-avhP --compress --stats</code></td>
+                                        <td>
+                                            • <strong>--compress</strong> - Reduces network bandwidth<br>
+                                            • <strong>-P</strong> - Resume interrupted transfers<br>
+                                            • Slower but saves bandwidth
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Move Operation</strong><br><small>Transfer then delete source</small></td>
+                                        <td><code>-avhP --remove-source-files --checksum --stats</code></td>
+                                        <td>
+                                            • <strong>--checksum</strong> - Verify before deleting source<br>
+                                            • <strong>--remove-source-files</strong> - Delete after success<br>
+                                            • <strong>CRITICAL:</strong> Use --checksum for data safety
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Mirror/Sync</strong><br><small>Exact copy, delete extras</small></td>
+                                        <td><code>-avhP --delete --stats</code></td>
+                                        <td>
+                                            • <strong>--delete</strong> - Remove files not in source<br>
+                                            • Creates exact mirror of source<br>
+                                            • <strong>WARNING:</strong> Test with --dry-run first!
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Initial Large Transfer</strong><br><small>First time, many GB</small></td>
+                                        <td><code>-avhP --whole-file --stats</code></td>
+                                        <td>
+                                            • <strong>--whole-file</strong> - Faster for local drives<br>
+                                            • Skip delta calculation on large files<br>
+                                            • Best for first-time copies
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Incremental Backup</strong><br><small>Daily/regular backups</small></td>
+                                        <td><code>-avhP --update --stats</code></td>
+                                        <td>
+                                            • <strong>--update</strong> - Skip newer files on destination<br>
+                                            • Only transfer changed/new files<br>
+                                            • Efficient for scheduled backups
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Testing/Dry Run</strong><br><small>See what will happen</small></td>
+                                        <td><code>-avhP --dry-run --itemize-changes</code></td>
+                                        <td>
+                                            • <strong>--dry-run</strong> - No actual changes<br>
+                                            • <strong>--itemize-changes</strong> - Detailed list<br>
+                                            • <strong>ALWAYS</strong> test dangerous operations first!
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Bandwidth Limited</strong><br><small>Don't saturate network</small></td>
+                                        <td><code>-avhP --compress --bwlimit=1000 --stats</code></td>
+                                        <td>
+                                            • <strong>--bwlimit=1000</strong> - Limit to 1MB/s (1000 KB/s)<br>
+                                            • Prevent network congestion<br>
+                                            • Adjust value based on your needs
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Resume Interrupted</strong><br><small>Continue failed transfer</small></td>
+                                        <td><code>-avhP --partial-dir=.rsync-partial --stats</code></td>
+                                        <td>
+                                            • <strong>-P</strong> - Already includes partial support<br>
+                                            • <strong>--partial-dir</strong> - Custom location for partials<br>
+                                            • Safely resume large transfers
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Disk Images/VMs</strong><br><small>Large single files</small></td>
+                                        <td><code>-avhP --inplace --sparse --stats</code></td>
+                                        <td>
+                                            • <strong>--inplace</strong> - Update file directly<br>
+                                            • <strong>--sparse</strong> - Handle sparse files efficiently<br>
+                                            • Faster for large database/VM files
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <div class="guide-section">
+                            <h3>⚙️ Argument Reference</h3>
+                            <table class="guide-table">
+                                <thead>
+                                    <tr>
+                                        <th>Argument</th>
+                                        <th>When to Use</th>
+                                        <th>When NOT to Use</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><code>-a</code> (archive)</td>
+                                        <td>✅ Always - preserves permissions, timestamps, symlinks</td>
+                                        <td>❌ Rarely skip this</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>-v</code> (verbose)</td>
+                                        <td>✅ Debugging, detailed logs</td>
+                                        <td>⚠️ Huge transfers (too much output)</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>-h</code> (human-readable)</td>
+                                        <td>✅ Always - makes output readable</td>
+                                        <td>❌ Never skip</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>-P</code> (progress + partial)</td>
+                                        <td>✅ Always - shows progress, allows resume</td>
+                                        <td>⚠️ Automated scripts (too much output)</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>--compress</code></td>
+                                        <td>✅ Network transfers, slow connections</td>
+                                        <td>❌ Local drives (wastes CPU), fast networks</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>--delete</code></td>
+                                        <td>✅ Mirror/sync operations</td>
+                                        <td>❌ Backups where you want to keep old files</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>--remove-source-files</code></td>
+                                        <td>✅ Move operations (with --checksum!)</td>
+                                        <td>❌ Backups, without --checksum</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>--checksum</code></td>
+                                        <td>✅ Critical data, moves, verify integrity</td>
+                                        <td>❌ Speed is priority (slower but safer)</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>--stats</code></td>
+                                        <td>✅ Always - shows transfer summary</td>
+                                        <td>❌ Rarely skip this</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>--whole-file</code></td>
+                                        <td>✅ Local drives, first-time transfers</td>
+                                        <td>❌ Network (wastes bandwidth), incremental</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>--update</code></td>
+                                        <td>✅ Incremental backups</td>
+                                        <td>❌ First transfer, when destination is newer</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>--dry-run</code></td>
+                                        <td>✅ Testing any new operation</td>
+                                        <td>❌ When you actually want to transfer</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>--bwlimit=N</code></td>
+                                        <td>✅ Shared networks, background transfers</td>
+                                        <td>❌ When speed is priority</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>--inplace</code></td>
+                                        <td>✅ Large files (VMs, databases)</td>
+                                        <td>❌ When you need atomic updates</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>--sparse</code></td>
+                                        <td>✅ VM images, disk images with holes</td>
+                                        <td>❌ Regular files (no benefit)</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <div class="guide-section">
+                            <h3>💡 Pro Tips</h3>
+                            <div class="tips-grid">
+                                <div class="tip-card">
+                                    <h4>🔒 Safety First</h4>
+                                    <ul>
+                                        <li>Always use <code>--dry-run</code> first for destructive operations</li>
+                                        <li>Use <code>--checksum</code> with <code>--remove-source-files</code></li>
+                                        <li>Test on small subset before large transfers</li>
+                                        <li>Keep backups before using <code>--delete</code></li>
+                                    </ul>
+                                </div>
+                                
+                                <div class="tip-card">
+                                    <h4>⚡ Performance</h4>
+                                    <ul>
+                                        <li>Local drives: skip <code>--compress</code>, use <code>--whole-file</code></li>
+                                        <li>Network: use <code>--compress</code>, consider <code>--bwlimit</code></li>
+                                        <li>Large files: use <code>--inplace</code> + <code>--sparse</code></li>
+                                        <li>Many small files: default delta algorithm is fastest</li>
+                                    </ul>
+                                </div>
+                                
+                                <div class="tip-card">
+                                    <h4>📊 Monitoring</h4>
+                                    <ul>
+                                        <li>Always include <code>--stats</code> for summary</li>
+                                        <li>Use <code>--itemize-changes</code> for detailed logs</li>
+                                        <li>Check logs after completion</li>
+                                        <li>Monitor disk space on destination</li>
+                                    </ul>
+                                </div>
+                                
+                                <div class="tip-card">
+                                    <h4>🔄 Best Practices</h4>
+                                    <ul>
+                                        <li>Trailing slash matters: <code>/path/</code> vs <code>/path</code></li>
+                                        <li>Use absolute paths to avoid confusion</li>
+                                        <li>Exclude patterns: <code>.DS_Store node_modules *.tmp</code></li>
+                                        <li>Regular backups: use <code>--update</code> for efficiency</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="guide-section warning-section">
+                            <h3>⚠️ Dangerous Operations - Handle With Care</h3>
+                            <div class="danger-grid">
+                                <div class="danger-card">
+                                    <h4>🔥 <code>--delete</code></h4>
+                                    <p>Deletes files from destination that don't exist in source.</p>
+                                    <p><strong>Risk:</strong> Permanent data loss</p>
+                                    <p><strong>Safe use:</strong> <code>--dry-run --delete</code> first, then remove dry-run</p>
+                                </div>
+                                
+                                <div class="danger-card">
+                                    <h4>🔥 <code>--remove-source-files</code></h4>
+                                    <p>Deletes files from source after transfer.</p>
+                                    <p><strong>Risk:</strong> Data loss if transfer fails</p>
+                                    <p><strong>Safe use:</strong> Always combine with <code>--checksum</code></p>
+                                </div>
+                                
+                                <div class="danger-card">
+                                    <h4>⚠️ <code>--inplace</code></h4>
+                                    <p>Updates files directly without using temp files.</p>
+                                    <p><strong>Risk:</strong> File corruption if interrupted</p>
+                                    <p><strong>Safe use:</strong> Only for files that can be re-transferred</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="guide-section">
+                            <h3>🚀 Quick Start Commands</h3>
+                            <div class="command-examples">
+                                <div class="command-box">
+                                    <h4>Simple Local Backup</h4>
+                                    <code>rsync -avhP --stats /source/ /backup/</code>
+                                    <p>Safe, fast, shows progress</p>
+                                </div>
+                                
+                                <div class="command-box">
+                                    <h4>Network Backup</h4>
+                                    <code>rsync -avhP --compress --stats /source/ user@server:/backup/</code>
+                                    <p>Compressed for network efficiency</p>
+                                </div>
+                                
+                                <div class="command-box">
+                                    <h4>Safe Move Operation</h4>
+                                    <code>rsync -avhP --remove-source-files --checksum --stats /source/ /destination/</code>
+                                    <p>Verified move with checksum</p>
+                                </div>
+                                
+                                <div class="command-box">
+                                    <h4>Mirror/Sync (Test First!)</h4>
+                                    <code>rsync -avhP --delete --dry-run --stats /source/ /mirror/</code>
+                                    <p>See what would be deleted, then remove --dry-run</p>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </main>
+
+        <!-- Create Job Modal -->
+        <div id="create-job-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Create New Job</h2>
+                    <span class="close" onclick="closeCreateModal()">&times;</span>
+                </div>
+                <form id="create-job-form">
+                    <div class="form-group">
+                        <label for="job-name">Job Name *</label>
+                        <input type="text" id="job-name" name="name" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="job-source">Source Path *</label>
+                        <input type="text" id="job-source" name="source" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="job-destination">Destination Path *</label>
+                        <input type="text" id="job-destination" name="destination" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="job-excludes">Exclude Patterns</label>
+                        <input type="text" id="job-excludes" name="excludes" 
+                               placeholder="node_modules .DS_Store *.tmp">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="job-max-retries">Max Retries</label>
+                        <input type="number" id="job-max-retries" name="max_retries" value="5" min="1" max="10">
+                    </div>
+                    
+                    <!-- Rsync Options -->
+                    <div class="form-group">
+                        <h3>Basic Rsync Options</h3>
+                        <div class="checkbox-group">
+                            <label>
+                                <input type="checkbox" name="archive" checked>
+                                Archive mode (-a) - Preserves permissions, timestamps, etc.
+                            </label>
+                            <label>
+                                <input type="checkbox" name="verbose" checked>
+                                Verbose (-v) - Detailed output
+                            </label>
+                            <label>
+                                <input type="checkbox" name="human_readable" checked>
+                                Human-readable (-h) - Format numbers
+                            </label>
+                            <label>
+                                <input type="checkbox" name="progress" checked>
+                                Show progress (-P) - Progress bar + partial files
+                            </label>
+                            <label>
+                                <input type="checkbox" name="compress">
+                                Compress (--compress) - Use for network transfers only
+                            </label>
+                            <label>
+                                <input type="checkbox" name="delete">
+                                Delete extraneous files (--delete) - Mirror mode
+                            </label>
+                            <label>
+                                <input type="checkbox" name="dry_run">
+                                Dry run (--dry-run) - Test without changes
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <!-- Advanced Rsync Options -->
+                    <div class="form-group">
+                        <h3>Advanced Options</h3>
+                        <div class="checkbox-group">
+                            <label>
+                                <input type="checkbox" name="checksum">
+                                Checksum (--checksum) - Verify file integrity
+                            </label>
+                            <label>
+                                <input type="checkbox" name="stats" checked>
+                                Stats (--stats) - Show transfer statistics
+                            </label>
+                            <label>
+                                <input type="checkbox" name="itemize_changes">
+                                Itemize changes (--itemize-changes) - Detailed change list
+                            </label>
+                            <label>
+                                <input type="checkbox" name="inplace">
+                                In-place (--inplace) - Update files directly
+                            </label>
+                            <label>
+                                <input type="checkbox" name="sparse">
+                                Sparse (--sparse) - Handle sparse files efficiently
+                            </label>
+                            <label>
+                                <input type="checkbox" name="whole_file">
+                                Whole file (--whole-file) - Copy entire files (faster for local)
+                            </label>
+                            <label>
+                                <input type="checkbox" name="update">
+                                Update (--update) - Skip newer files on destination
+                            </label>
+                            <label>
+                                <input type="checkbox" name="ignore_existing">
+                                Ignore existing (--ignore-existing) - Skip all existing files
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <!-- Advanced Settings -->
+                    <div class="form-group">
+                        <h3>Advanced Settings</h3>
+                        <label for="bwlimit">Bandwidth Limit (KB/s)</label>
+                        <input type="text" id="bwlimit" name="bwlimit" placeholder="e.g., 1000 for 1MB/s (leave empty for unlimited)">
+                        
+                        <label for="partial_dir">Partial Directory</label>
+                        <input type="text" id="partial_dir" name="partial_dir" placeholder="e.g., .rsync-partial (optional)">
+                    </div>
+                    
+                    <!-- Dangerous Option: Remove Source Files -->
+                    <div class="form-group dangerous-section">
+                        <div class="dangerous-option">
+                            <label>
+                                <input type="checkbox" name="remove_source_files" id="remove-source-files">
+                                <span class="danger-label">⚠️ Delete source files after transfer</span>
+                            </label>
+                            <p class="danger-warning">This will permanently delete files from the source location after successful transfer!</p>
+                            
+                            <!-- Confirmation box (shown only when checkbox is checked) -->
+                            <div id="delete-confirmation" class="delete-confirmation" style="display: none;">
+                                <label for="delete-confirmation-input">Type "delete" to confirm:</label>
+                                <input type="text" id="delete-confirmation-input" placeholder="delete">
+                                <div class="confirmation-status" id="confirmation-status"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Command Preview -->
+                    <div class="form-group">
+                        <h3>Command Preview</h3>
+                        <div class="command-preview">
+                            <code id="command-preview">rsync -a -v -h -P --compress [SOURCE] [DESTINATION]</code>
+                        </div>
+                        <button type="button" class="btn btn-small btn-secondary" onclick="copyCommand()">
+                            📋 Copy
+                        </button>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">Create Job</button>
+                        <button type="button" class="btn btn-secondary" onclick="closeCreateModal()">Cancel</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Logs Modal -->
+        <div id="logs-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Job Logs</h2>
+                    <span class="close" onclick="closeLogsModal()">&times;</span>
+                </div>
+                <div class="logs-content">
+                    <pre id="logs-text">Loading logs...</pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Rclone Operation Modal -->
+        <div id="rclone-operation-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Create Rclone Operation</h2>
+                    <span class="close" onclick="closeRcloneModal()">&times;</span>
+                </div>
+                <form id="rclone-operation-form">
+                    <div class="form-group">
+                        <label for="rclone-name">Operation Name *</label>
+                        <input type="text" id="rclone-name" name="name" placeholder="My Cloud Backup" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="rclone-operation-type">Operation Type *</label>
+                        <select id="rclone-operation-type" name="operation_type" required>
+                            <option value="copy">Copy</option>
+                            <option value="sync">Sync (Mirror)</option>
+                            <option value="move">Move</option>
+                            <option value="check">Check</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="rclone-source">Source *</label>
+                        <input type="text" id="rclone-source" name="source" placeholder="e.g., gdrive:Backups or /local/path" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="rclone-destination">Destination *</label>
+                        <input type="text" id="rclone-destination" name="destination" placeholder="e.g., s3:bucket/backup or /backup/path" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="rclone-excludes">Exclude Patterns</label>
+                        <input type="text" id="rclone-excludes" name="excludes" placeholder="*.tmp .DS_Store __pycache__">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="rclone-max-retries">Max Retries</label>
+                        <input type="number" id="rclone-max-retries" name="max_retries" value="3" min="1" max="10">
+                    </div>
+                    
+                    <!-- Basic Rclone Options -->
+                    <div class="form-group">
+                        <h3>Basic Options</h3>
+                        <div class="checkbox-group">
+                            <label>
+                                <input type="checkbox" name="verbose" checked>
+                                Verbose (-v) - Detailed output
+                            </label>
+                            <label>
+                                <input type="checkbox" name="progress" checked>
+                                Show Progress - Real-time progress display
+                            </label>
+                            <label>
+                                <input type="checkbox" name="dry_run">
+                                Dry Run (--dry-run) - Test without changes
+                            </label>
+                            <label>
+                                <input type="checkbox" name="checksum">
+                                Checksum - Verify file integrity
+                            </label>
+                            <label>
+                                <input type="checkbox" name="delete">
+                                Delete (--delete) - Remove extra files on destination
+                            </label>
+                            <label>
+                                <input type="checkbox" name="stats" checked>
+                                Stats - Show transfer statistics
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <!-- Performance Options -->
+                    <div class="form-group">
+                        <h3>Performance Tuning</h3>
+                        <div class="checkbox-group">
+                            <label>
+                                <input type="checkbox" name="fast_list">
+                                Fast List - Use recursive list if available (faster)
+                            </label>
+                            <label>
+                                <input type="checkbox" name="no_traverse">
+                                No Traverse - Don't list destination before transfer
+                            </label>
+                        </div>
+                        
+                        <label for="rclone-transfers">Concurrent Transfers</label>
+                        <input type="number" id="rclone-transfers" name="transfers" value="4" min="1" max="32">
+                        <small>Number of files to transfer in parallel (default: 4)</small>
+                        
+                        <label for="rclone-checkers">Concurrent Checkers</label>
+                        <input type="number" id="rclone-checkers" name="checkers" value="8" min="1" max="32">
+                        <small>Number of files to check in parallel (default: 8)</small>
+                        
+                        <label for="rclone-bwlimit">Bandwidth Limit</label>
+                        <input type="text" id="rclone-bwlimit" name="bwlimit" placeholder="e.g., 10M or 1G">
+                        <small>Limit bandwidth (e.g., 10M = 10MB/s, 1G = 1GB/s)</small>
+                    </div>
+                    
+                    <!-- Advanced Transfer Options -->
+                    <div class="form-group">
+                        <h3>Advanced Transfer Options</h3>
+                        <div class="checkbox-group">
+                            <label>
+                                <input type="checkbox" name="update">
+                                Update - Skip files newer on destination
+                            </label>
+                            <label>
+                                <input type="checkbox" name="ignore_existing">
+                                Ignore Existing - Skip all existing files
+                            </label>
+                            <label>
+                                <input type="checkbox" name="size_only">
+                                Size Only - Skip based on size only
+                            </label>
+                            <label>
+                                <input type="checkbox" name="ignore_size">
+                                Ignore Size - Don't compare file sizes
+                            </label>
+                            <label>
+                                <input type="checkbox" name="use_server_modtime">
+                                Server Modtime - Use server modified time
+                            </label>
+                            <label>
+                                <input type="checkbox" name="track_renames">
+                                Track Renames - Detect renamed files (slower but saves bandwidth)
+                            </label>
+                            <label>
+                                <input type="checkbox" name="inplace">
+                                In-place - Update files directly (risky, use with caution)
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <!-- Retry & Timeout Options -->
+                    <div class="form-group">
+                        <h3>Retry & Timeout Settings</h3>
+                        
+                        <label for="rclone-retries">Retries</label>
+                        <input type="number" id="rclone-retries" name="retries" value="3" min="0" max="100">
+                        <small>Number of retries for failed operations (default: 3)</small>
+                        
+                        <label for="rclone-low-level-retries">Low Level Retries</label>
+                        <input type="number" id="rclone-low-level-retries" name="low_level_retries" value="10" min="0" max="100">
+                        <small>Low level retry attempts (default: 10)</small>
+                        
+                        <label for="rclone-timeout">Timeout</label>
+                        <input type="text" id="rclone-timeout" name="timeout" placeholder="e.g., 5m, 1h">
+                        <small>IO idle timeout (e.g., 5m = 5 minutes)</small>
+                        
+                        <label for="rclone-contimeout">Connection Timeout</label>
+                        <input type="text" id="rclone-contimeout" name="contimeout" placeholder="e.g., 60s, 1m">
+                        <small>Connection timeout (e.g., 60s = 60 seconds)</small>
+                    </div>
+                    
+                    <!-- File Filtering Options -->
+                    <div class="form-group">
+                        <h3>File Filtering</h3>
+                        
+                        <label for="rclone-min-size">Min Size</label>
+                        <input type="text" id="rclone-min-size" name="min_size" placeholder="e.g., 10k, 1M, 1G">
+                        <small>Only transfer files larger than this (e.g., 10k, 1M)</small>
+                        
+                        <label for="rclone-max-size">Max Size</label>
+                        <input type="text" id="rclone-max-size" name="max_size" placeholder="e.g., 100M, 1G">
+                        <small>Only transfer files smaller than this (e.g., 100M)</small>
+                        
+                        <label for="rclone-min-age">Min Age</label>
+                        <input type="text" id="rclone-min-age" name="min_age" placeholder="e.g., 24h, 7d">
+                        <small>Only transfer files older than this (e.g., 24h, 7d)</small>
+                        
+                        <label for="rclone-max-age">Max Age</label>
+                        <input type="text" id="rclone-max-age" name="max_age" placeholder="e.g., 30d, 1y">
+                        <small>Only transfer files younger than this (e.g., 30d)</small>
+                        
+                        <label for="rclone-max-delete">Max Delete</label>
+                        <input type="number" id="rclone-max-delete" name="max_delete" placeholder="e.g., 100">
+                        <small>Maximum number of files to delete (safety limit)</small>
+                    </div>
+                    
+                    <!-- Buffer & Chunk Options -->
+                    <div class="form-group">
+                        <h3>Buffer & Chunk Sizes</h3>
+                        
+                        <label for="rclone-buffer-size">Buffer Size</label>
+                        <input type="text" id="rclone-buffer-size" name="buffer_size" placeholder="e.g., 16M, 32M">
+                        <small>Buffer size for each file transfer (default: 16M)</small>
+                        
+                        <label for="rclone-drive-chunk-size">Drive Chunk Size</label>
+                        <input type="text" id="rclone-drive-chunk-size" name="drive_chunk_size" placeholder="e.g., 8M, 64M">
+                        <small>Upload chunk size for Google Drive (default: 8M)</small>
+                    </div>
+                    
+                    <!-- Command Preview -->
+                    <div class="form-group">
+                        <h3>Command Preview</h3>
+                        <div class="command-preview">
+                            <code id="rclone-command-preview">rclone copy [SOURCE] [DESTINATION]</code>
+                        </div>
+                        <button type="button" class="btn btn-small btn-secondary" onclick="copyRcloneCommand()">
+                            📋 Copy
+                        </button>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">Create & Start</button>
+                        <button type="button" class="btn btn-secondary" onclick="closeRcloneModal()">Cancel</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Rclone Logs Modal -->
+        <div id="rclone-logs-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Rclone Operation Logs</h2>
+                    <span class="close" onclick="closeRcloneLogsModal()">&times;</span>
+                </div>
+                <div class="logs-content">
+                    <pre id="rclone-logs-text">Loading logs...</pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Status Messages -->
+        <div id="status-message" class="status-message"></div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>

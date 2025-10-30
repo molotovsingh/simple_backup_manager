@@ -1,0 +1,49 @@
+# Runtime data (user-specific, contains job configurations)
+jobs.json
+rclone_operations.json
+rclone_remotes.json
+
+# Logs (generated during execution)
+logs/
+*.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# NPM cache
+.npm-cache/
+node_modules/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets (if any)
+.env
+*.pem
+*.key
+config.ini
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
