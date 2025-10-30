@@ -110,9 +110,35 @@ def api_stop_job(job_id):
             return jsonify({"message": f"Job {job_id} stopped successfully"})
         else:
             return jsonify({"error": f"Failed to stop job {job_id}"}), 400
-            
+
     except Exception as e:
         return jsonify({"error": f"Failed to stop job: {str(e)}"}), 500
+
+
+@app.route('/api/job/<job_id>/pause', methods=['POST'])
+def api_pause_job(job_id):
+    """API endpoint to pause a job"""
+    try:
+        if executor.pause_job(job_id):
+            return jsonify({"message": f"Job {job_id} paused successfully"})
+        else:
+            return jsonify({"error": f"Failed to pause job {job_id}"}), 400
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to pause job: {str(e)}"}), 500
+
+
+@app.route('/api/job/<job_id>/resume', methods=['POST'])
+def api_resume_job(job_id):
+    """API endpoint to resume a job"""
+    try:
+        if executor.resume_job(job_id):
+            return jsonify({"message": f"Job {job_id} resumed successfully"})
+        else:
+            return jsonify({"error": f"Failed to resume job {job_id}"}), 400
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to resume job: {str(e)}"}), 500
 
 
 @app.route('/api/job/<job_id>/restart', methods=['POST'])
@@ -173,9 +199,23 @@ def api_job_logs(job_id):
             return jsonify({"logs": logs})
         else:
             return jsonify({"logs": ""})
-            
+
     except Exception as e:
         return jsonify({"error": f"Failed to read logs: {str(e)}"}), 500
+
+
+@app.route('/api/jobs/cleanup-zombies', methods=['POST'])
+def api_cleanup_zombie_jobs():
+    """API endpoint to cleanup zombie jobs"""
+    try:
+        cleaned = executor.cleanup_zombie_jobs()
+        return jsonify({
+            "message": f"Cleaned up {cleaned} zombie jobs",
+            "cleaned_count": cleaned
+        })
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to cleanup zombies: {str(e)}"}), 500
 
 
 @app.route('/api/rsync/preview', methods=['POST'])
@@ -324,9 +364,35 @@ def api_stop_rclone_operation(operation_id):
             return jsonify({"message": f"Operation {operation_id} stopped successfully"})
         else:
             return jsonify({"error": f"Failed to stop operation {operation_id}"}), 400
-            
+
     except Exception as e:
         return jsonify({"error": f"Failed to stop operation: {str(e)}"}), 500
+
+
+@app.route('/api/rclone/operation/<operation_id>/pause', methods=['POST'])
+def api_pause_rclone_operation(operation_id):
+    """Pause a running rclone operation"""
+    try:
+        if rclone_executor.pause_operation(operation_id):
+            return jsonify({"message": f"Operation {operation_id} paused successfully"})
+        else:
+            return jsonify({"error": f"Failed to pause operation {operation_id}"}), 400
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to pause operation: {str(e)}"}), 500
+
+
+@app.route('/api/rclone/operation/<operation_id>/resume', methods=['POST'])
+def api_resume_rclone_operation(operation_id):
+    """Resume a paused rclone operation"""
+    try:
+        if rclone_executor.resume_operation(operation_id):
+            return jsonify({"message": f"Operation {operation_id} resumed successfully"})
+        else:
+            return jsonify({"error": f"Failed to resume operation {operation_id}"}), 400
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to resume operation: {str(e)}"}), 500
 
 
 @app.route('/api/rclone/operation/<operation_id>/delete', methods=['DELETE'])
@@ -357,9 +423,23 @@ def api_rclone_operation_logs(operation_id):
             return jsonify({"logs": logs})
         else:
             return jsonify({"logs": ""})
-            
+
     except Exception as e:
         return jsonify({"error": f"Failed to read logs: {str(e)}"}), 500
+
+
+@app.route('/api/rclone/operations/cleanup-zombies', methods=['POST'])
+def api_cleanup_zombie_operations():
+    """API endpoint to cleanup zombie rclone operations"""
+    try:
+        cleaned = rclone_executor.cleanup_zombie_operations()
+        return jsonify({
+            "message": f"Cleaned up {cleaned} zombie operations",
+            "cleaned_count": cleaned
+        })
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to cleanup zombies: {str(e)}"}), 500
 
 
 @app.route('/api/rclone/remotes')
@@ -456,6 +536,15 @@ def api_rclone_preview():
 
 
 if __name__ == '__main__':
+    # Clean up zombie jobs and operations on startup
+    print("Cleaning up zombie processes from previous sessions...")
+    jobs_cleaned = executor.cleanup_zombie_jobs()
+    ops_cleaned = rclone_executor.cleanup_zombie_operations()
+    if jobs_cleaned > 0 or ops_cleaned > 0:
+        print(f"  ✓ Cleaned up {jobs_cleaned} zombie jobs and {ops_cleaned} zombie operations")
+    else:
+        print("  ✓ No zombie processes found")
+
     # Create some sample jobs if none exist
     if not storage.get_all_jobs():
         sample_jobs = [
@@ -476,7 +565,7 @@ if __name__ == '__main__':
                 "max_retries": 5
             },
             {
-                "name": "Photos Sync", 
+                "name": "Photos Sync",
                 "source": "/Users/aks/Photos",
                 "destination": "/Volumes/Backup/Photos",
                 "rsync_args": {
@@ -491,11 +580,11 @@ if __name__ == '__main__':
                 "max_retries": 3
             }
         ]
-        
+
         for job_data in sample_jobs:
             storage.create_job(job_data)
-        
+
         print("Created sample jobs for demonstration")
-    
+
     print("Starting Job Restart Manager on http://localhost:8080")
     app.run(debug=True, host='0.0.0.0', port=8080)

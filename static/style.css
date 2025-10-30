@@ -102,6 +102,15 @@ header p {
     background-color: #c0392b;
 }
 
+.btn-warning {
+    background-color: #f39c12;
+    color: white;
+}
+
+.btn-warning:hover {
+    background-color: #e67e22;
+}
+
 .btn-small {
     padding: 8px 16px;
     font-size: 12px;
@@ -202,6 +211,11 @@ header p {
 .status-stopped {
     background-color: #fff3cd;
     color: #856404;
+}
+
+.status-paused {
+    background-color: #fff0e6;
+    color: #e67e22;
 }
 
 .job-details {

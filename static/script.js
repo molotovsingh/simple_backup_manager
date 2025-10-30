@@ -145,13 +145,35 @@ async function stopJob(jobId) {
     if (!confirm('Are you sure you want to stop this job?')) {
         return;
     }
-    
+
     try {
         await apiCall(`/api/job/${jobId}/stop`, { method: 'POST' });
         showStatus(`Job ${jobId} stopped`, 'success');
         setTimeout(refreshJobs, 1000);
     } catch (error) {
         console.error('Failed to stop job:', error);
+    }
+}
+
+async function pauseJob(jobId) {
+    try {
+        await apiCall(`/api/job/${jobId}/pause`, { method: 'POST' });
+        showStatus(`Job ${jobId} paused`, 'success');
+        setTimeout(refreshJobs, 1000);
+    } catch (error) {
+        console.error('Failed to pause job:', error);
+        showStatus(`Failed to pause job: ${error.message}`, 'error');
+    }
+}
+
+async function resumeJob(jobId) {
+    try {
+        await apiCall(`/api/job/${jobId}/resume`, { method: 'POST' });
+        showStatus(`Job ${jobId} resumed`, 'success');
+        setTimeout(refreshJobs, 1000);
+    } catch (error) {
+        console.error('Failed to resume job:', error);
+        showStatus(`Failed to resume job: ${error.message}`, 'error');
     }
 }
 
@@ -377,17 +399,18 @@ function updateJobList(jobs) {
 function createJobCard(job) {
     const statusClass = job.status ? `status-${job.status}` : 'status-unknown';
     const isRunning = job.status === 'running';
+    const isPaused = job.status === 'paused';
     const isFailed = job.status === 'failed';
     const isCreated = job.status === 'created';
     const hasProgress = job.progress;
-    
+
     return `
         <div class="job-card" data-job-id="${job.id}">
             <div class="job-header">
                 <h3>${job.name}</h3>
                 <span class="status ${statusClass}">${job.status ? job.status.toUpperCase() : 'UNKNOWN'}</span>
             </div>
-            
+
             <div class="job-details">
                 <div class="job-info">
                     <div class="info-row">
@@ -404,27 +427,38 @@ function createJobCard(job) {
                         <strong>Error:</strong> ${job.error_message}
                     </div>` : ''}
                 </div>
-                
+
                 <div class="job-actions">
                     ${isCreated ? `
                     <button class="btn btn-small btn-success" onclick="startJob('${job.id}')">
                         ▶️ Start
                     </button>` : ''}
-                    
+
                     ${isFailed ? `
                     <button class="btn btn-small btn-primary" onclick="restartJob('${job.id}')">
                         🔄 Restart
                     </button>` : ''}
-                    
+
                     ${isRunning ? `
+                    <button class="btn btn-small btn-warning" onclick="pauseJob('${job.id}')">
+                        ⏸️ Pause
+                    </button>
                     <button class="btn btn-small btn-danger" onclick="stopJob('${job.id}')">
                         ⏹️ Stop
                     </button>` : ''}
-                    
+
+                    ${isPaused ? `
+                    <button class="btn btn-small btn-success" onclick="resumeJob('${job.id}')">
+                        ▶️ Resume
+                    </button>
+                    <button class="btn btn-small btn-danger" onclick="stopJob('${job.id}')">
+                        ⏹️ Stop
+                    </button>` : ''}
+
                     <button class="btn btn-small btn-secondary" onclick="viewLogs('${job.id}')">
                         📋 Logs
                     </button>
-                    
+
                     <button class="btn btn-small btn-danger" onclick="deleteJob('${job.id}')">
                         🗑️ Delete
                     </button>
@@ -642,9 +676,10 @@ function updateRcloneOperationList(operations) {
 function createRcloneOperationCard(operation) {
     const statusClass = operation.status ? `status-${operation.status}` : 'status-unknown';
     const isRunning = operation.status === 'running';
+    const isPaused = operation.status === 'paused';
     const isFailed = operation.status === 'failed';
     const hasProgress = operation.progress;
-    
+
     return `
         <div class="rclone-operation-card" data-operation-id="${operation.id}">
             <div class="rclone-operation-header">
@@ -654,7 +689,7 @@ function createRcloneOperationCard(operation) {
                 </div>
                 <span class="rclone-operation-type">${operation.operation_type}</span>
             </div>
-            
+
             <div class="rclone-operation-info">
                 <div class="rclone-info-row">
                     <strong>Source:</strong> ${operation.source}
@@ -670,22 +705,33 @@ function createRcloneOperationCard(operation) {
                     <strong>Error:</strong> ${operation.error_message}
                 </div>` : ''}
             </div>
-            
+
             <div class="rclone-operation-actions">
                 ${isFailed ? `
                 <button class="btn btn-small btn-primary" onclick="startRcloneOperation('${operation.id}')">
                     🔄 Restart
                 </button>` : ''}
-                
+
                 ${isRunning ? `
+                <button class="btn btn-small btn-warning" onclick="pauseRcloneOperation('${operation.id}')">
+                    ⏸️ Pause
+                </button>
                 <button class="btn btn-small btn-danger" onclick="stopRcloneOperation('${operation.id}')">
                     ⏹️ Stop
                 </button>` : ''}
-                
+
+                ${isPaused ? `
+                <button class="btn btn-small btn-success" onclick="resumeRcloneOperation('${operation.id}')">
+                    ▶️ Resume
+                </button>
+                <button class="btn btn-small btn-danger" onclick="stopRcloneOperation('${operation.id}')">
+                    ⏹️ Stop
+                </button>` : ''}
+
                 <button class="btn btn-small btn-secondary" onclick="viewRcloneLogs('${operation.id}')">
                     📋 Logs
                 </button>
-                
+
                 <button class="btn btn-small btn-danger" onclick="deleteRcloneOperation('${operation.id}')">
                     🗑️ Delete
                 </button>
@@ -790,13 +836,35 @@ async function stopRcloneOperation(operationId) {
     if (!confirm('Are you sure you want to stop this operation?')) {
         return;
     }
-    
+
     try {
         await apiCall(`/api/rclone/operation/${operationId}/stop`, { method: 'POST' });
         showStatus(`Operation ${operationId} stopped`, 'success');
         setTimeout(loadRcloneOperations, 1000);
     } catch (error) {
         console.error('Failed to stop rclone operation:', error);
+    }
+}
+
+async function pauseRcloneOperation(operationId) {
+    try {
+        await apiCall(`/api/rclone/operation/${operationId}/pause`, { method: 'POST' });
+        showStatus(`Operation ${operationId} paused`, 'success');
+        setTimeout(loadRcloneOperations, 1000);
+    } catch (error) {
+        console.error('Failed to pause rclone operation:', error);
+        showStatus(`Failed to pause operation: ${error.message}`, 'error');
+    }
+}
+
+async function resumeRcloneOperation(operationId) {
+    try {
+        await apiCall(`/api/rclone/operation/${operationId}/resume`, { method: 'POST' });
+        showStatus(`Operation ${operationId} resumed`, 'success');
+        setTimeout(loadRcloneOperations, 1000);
+    } catch (error) {
+        console.error('Failed to resume rclone operation:', error);
+        showStatus(`Failed to resume operation: ${error.message}`, 'error');
     }
 }
 

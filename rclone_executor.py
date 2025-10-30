@@ -5,6 +5,8 @@ import subprocess
 import threading
 import time
 import json
+import signal
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable, List
@@ -22,6 +24,10 @@ class RcloneExecutor:
         self.running_operations: Dict[str, threading.Thread] = {}
         self.operation_processes: Dict[str, subprocess.Popen] = {}
         self.progress_callbacks: Dict[str, Callable] = {}
+        self.operation_locks: Dict[str, threading.Lock] = {}
+        self.stop_flags: Dict[str, threading.Event] = {}
+        self.paused_operations: Dict[str, bool] = {}
+        self._state_lock = threading.Lock()  # Global state lock
 
     def _get_log_file(self, operation_id: str) -> Path:
         """Get log file path for operation"""
@@ -48,6 +54,7 @@ class RcloneExecutor:
 
     def _execute_rclone_operation(self, operation_id: str, operation_data: Dict[str, Any]):
         """Execute rclone operation with monitoring"""
+        process = None
         try:
             self._log_message(operation_id, f"Starting rclone operation: {operation_data.get('name', 'Unnamed')}")
 
@@ -68,10 +75,12 @@ class RcloneExecutor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                universal_newlines=True
+                universal_newlines=True,
+                preexec_fn=os.setsid if os.name != 'nt' else None  # Create process group on Unix
             )
 
-            self.operation_processes[operation_id] = process
+            with self._state_lock:
+                self.operation_processes[operation_id] = process
 
             # Update status to running
             self._update_progress(operation_id, {
@@ -87,6 +96,11 @@ class RcloneExecutor:
             # Monitor output
             output_lines = []
             for line in iter(process.stdout.readline, ''):
+                # Check if stop was requested
+                if operation_id in self.stop_flags and self.stop_flags[operation_id].is_set():
+                    self._log_message(operation_id, "Stop requested, terminating...")
+                    break
+
                 if line:
                     output_lines.append(line.strip())
                     self._log_message(operation_id, line.strip())
@@ -96,8 +110,29 @@ class RcloneExecutor:
                     if progress:
                         self._update_progress(operation_id, progress)
 
+            # Check if we broke out due to stop
+            if operation_id in self.stop_flags and self.stop_flags[operation_id].is_set():
+                # Process was stopped by user
+                self._log_message(operation_id, "Operation stopped by user")
+                self._update_progress(operation_id, {
+                    "status": "stopped",
+                    "stopped_at": datetime.now().isoformat()
+                })
+                return
+
             # Wait for process to complete
             returncode = process.wait()
+
+            # Check if process died unexpectedly
+            if returncode is None:
+                error_msg = "Process died unexpectedly (returncode is None)"
+                self._log_message(operation_id, error_msg)
+                self._update_progress(operation_id, {
+                    "status": "failed",
+                    "failed_at": datetime.now().isoformat(),
+                    "error_message": error_msg
+                })
+                return
 
             # Handle completion
             if returncode == 0:
@@ -130,11 +165,31 @@ class RcloneExecutor:
             })
 
         finally:
-            # Clean up
-            if operation_id in self.operation_processes:
-                del self.operation_processes[operation_id]
-            if operation_id in self.running_operations:
-                del self.running_operations[operation_id]
+            # Clean up process resources
+            if process:
+                try:
+                    if process.poll() is None:
+                        # Process still running, kill it
+                        if os.name != 'nt':
+                            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                        else:
+                            process.terminate()
+                        process.wait(timeout=5)
+                except Exception as e:
+                    self._log_message(operation_id, f"Error during process cleanup: {e}")
+
+            # Clean up tracking dictionaries
+            with self._state_lock:
+                if operation_id in self.operation_processes:
+                    del self.operation_processes[operation_id]
+                if operation_id in self.running_operations:
+                    del self.running_operations[operation_id]
+                if operation_id in self.stop_flags:
+                    del self.stop_flags[operation_id]
+                if operation_id in self.operation_locks:
+                    del self.operation_locks[operation_id]
+                if operation_id in self.paused_operations:
+                    del self.paused_operations[operation_id]
 
     def _parse_rclone_progress(self, line: str) -> Optional[Dict[str, Any]]:
         """Parse progress information from rclone output"""
@@ -218,9 +273,15 @@ class RcloneExecutor:
             print(f"Operation {operation_id} not found")
             return False
 
-        if operation_id in self.running_operations:
-            print(f"Operation {operation_id} is already running")
-            return False
+        with self._state_lock:
+            if operation_id in self.running_operations:
+                print(f"Operation {operation_id} is already running")
+                return False
+
+            # Initialize synchronization primitives
+            self.operation_locks[operation_id] = threading.Lock()
+            self.stop_flags[operation_id] = threading.Event()
+            self.paused_operations[operation_id] = False
 
         # Register progress callback
         if progress_callback:
@@ -234,40 +295,195 @@ class RcloneExecutor:
         thread.daemon = True
         thread.start()
 
-        self.running_operations[operation_id] = thread
+        with self._state_lock:
+            self.running_operations[operation_id] = thread
+
         return True
 
     def stop_operation(self, operation_id: str) -> bool:
         """Stop a running operation"""
-        if operation_id not in self.operation_processes:
-            print(f"Operation {operation_id} is not running")
-            return False
+        with self._state_lock:
+            # Check if operation is tracked
+            if operation_id not in self.running_operations and operation_id not in self.operation_processes:
+                print(f"Operation {operation_id} is not running")
+                return False
+
+            # Set stop flag to signal the thread
+            if operation_id in self.stop_flags:
+                self.stop_flags[operation_id].set()
+
+            # Get references before releasing lock
+            process = self.operation_processes.get(operation_id)
+            thread = self.running_operations.get(operation_id)
 
         try:
-            process = self.operation_processes[operation_id]
-            process.terminate()
+            # Terminate the process if it exists
+            if process and process.poll() is None:
+                self._log_message(operation_id, "Stopping operation...")
 
-            # Give it a moment to terminate gracefully
-            time.sleep(2)
+                try:
+                    # Try graceful termination first
+                    if os.name != 'nt':
+                        # Unix: send SIGTERM to process group
+                        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    else:
+                        # Windows: use terminate
+                        process.terminate()
 
-            if process.poll() is None:
-                process.kill()
+                    # Wait up to 10 seconds for graceful shutdown
+                    try:
+                        process.wait(timeout=10)
+                        self._log_message(operation_id, "Operation stopped gracefully")
+                    except subprocess.TimeoutExpired:
+                        # Force kill if still running
+                        self._log_message(operation_id, "Timeout, force killing process...")
+                        if os.name != 'nt':
+                            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                        else:
+                            process.kill()
+                        process.wait()
+                        self._log_message(operation_id, "Operation force killed")
 
-            self._log_message(operation_id, "Operation stopped by user")
+                except (ProcessLookupError, OSError) as e:
+                    self._log_message(operation_id, f"Process already terminated: {e}")
+
+            # Wait for thread to finish (with timeout)
+            if thread and thread.is_alive():
+                thread.join(timeout=5)
+                if thread.is_alive():
+                    self._log_message(operation_id, "Warning: Thread did not terminate cleanly")
+
+            # Update status
             self._update_progress(operation_id, {
                 "status": "stopped",
                 "stopped_at": datetime.now().isoformat()
             })
 
+            self._log_message(operation_id, "Operation stopped by user")
             return True
+
         except Exception as e:
-            print(f"Error stopping operation {operation_id}: {e}")
+            error_msg = f"Error stopping operation {operation_id}: {e}"
+            print(error_msg)
+            self._log_message(operation_id, error_msg)
             return False
+
+    def pause_operation(self, operation_id: str) -> bool:
+        """Pause a running operation"""
+        with self._state_lock:
+            if operation_id not in self.operation_processes:
+                print(f"Operation {operation_id} is not running")
+                return False
+
+            if self.paused_operations.get(operation_id, False):
+                print(f"Operation {operation_id} is already paused")
+                return False
+
+            process = self.operation_processes.get(operation_id)
+
+        try:
+            if process and process.poll() is None:
+                if os.name != 'nt':
+                    # Unix: send SIGSTOP to process group
+                    os.killpg(os.getpgid(process.pid), signal.SIGSTOP)
+                    with self._state_lock:
+                        self.paused_operations[operation_id] = True
+
+                    self._log_message(operation_id, "Operation paused")
+                    self._update_progress(operation_id, {
+                        "status": "paused",
+                        "paused_at": datetime.now().isoformat()
+                    })
+                    return True
+                else:
+                    # Windows doesn't support SIGSTOP, would need different approach
+                    print("Pause not supported on Windows")
+                    return False
+            return False
+
+        except Exception as e:
+            error_msg = f"Error pausing operation {operation_id}: {e}"
+            print(error_msg)
+            self._log_message(operation_id, error_msg)
+            return False
+
+    def resume_operation(self, operation_id: str) -> bool:
+        """Resume a paused operation"""
+        with self._state_lock:
+            if operation_id not in self.operation_processes:
+                print(f"Operation {operation_id} is not running")
+                return False
+
+            if not self.paused_operations.get(operation_id, False):
+                print(f"Operation {operation_id} is not paused")
+                return False
+
+            process = self.operation_processes.get(operation_id)
+
+        try:
+            if process and process.poll() is None:
+                if os.name != 'nt':
+                    # Unix: send SIGCONT to process group
+                    os.killpg(os.getpgid(process.pid), signal.SIGCONT)
+                    with self._state_lock:
+                        self.paused_operations[operation_id] = False
+
+                    self._log_message(operation_id, "Operation resumed")
+                    self._update_progress(operation_id, {
+                        "status": "running",
+                        "resumed_at": datetime.now().isoformat()
+                    })
+                    return True
+                else:
+                    # Windows doesn't support SIGCONT
+                    print("Resume not supported on Windows")
+                    return False
+            return False
+
+        except Exception as e:
+            error_msg = f"Error resuming operation {operation_id}: {e}"
+            print(error_msg)
+            self._log_message(operation_id, error_msg)
+            return False
+
+    def cleanup_zombie_operations(self) -> int:
+        """Clean up operations that are marked as running but have no active process"""
+        cleaned = 0
+        operations = self.storage.get_all_operations()
+
+        for op in operations:
+            op_id = op.get("id")
+            status = op.get("status")
+
+            # Check if marked as running but not actually running
+            if status == "running":
+                with self._state_lock:
+                    is_tracked = op_id in self.running_operations or op_id in self.operation_processes
+
+                if not is_tracked:
+                    # This is a zombie - mark it as failed
+                    self._log_message(op_id, "Detected zombie operation, marking as failed")
+                    self.storage.update_operation(op_id, {
+                        "status": "failed",
+                        "failed_at": datetime.now().isoformat(),
+                        "error_message": "Process terminated unexpectedly (zombie detected)"
+                    })
+                    cleaned += 1
+                    print(f"Cleaned up zombie operation: {op_id}")
+
+        return cleaned
 
     def get_running_operations(self) -> List[str]:
         """Get list of currently running operation IDs"""
-        return list(self.running_operations.keys())
+        with self._state_lock:
+            return list(self.running_operations.keys())
 
     def is_operation_running(self, operation_id: str) -> bool:
         """Check if an operation is currently running"""
-        return operation_id in self.running_operations
+        with self._state_lock:
+            return operation_id in self.running_operations
+
+    def is_operation_paused(self, operation_id: str) -> bool:
+        """Check if an operation is currently paused"""
+        with self._state_lock:
+            return self.paused_operations.get(operation_id, False)
