@@ -81,9 +81,14 @@ def build_rsync_command(source: str, destination: str, args: Dict[str, Any], exc
         if partial_dir and str(partial_dir).strip():
             command.append(f"--partial-dir={partial_dir}")
     
-    # Add exclude patterns
+    # Add exclude patterns (newline-separated for patterns with spaces)
     if excludes and excludes.strip():
-        exclude_list = excludes.strip().split()
+        # Split by newlines first, then fallback to whitespace for backward compatibility
+        if '\n' in excludes:
+            exclude_list = [p.strip() for p in excludes.strip().split('\n') if p.strip()]
+        else:
+            # Legacy: whitespace-separated (can't handle patterns with spaces)
+            exclude_list = excludes.strip().split()
         for pattern in exclude_list:
             command.extend(["--exclude", pattern])
     

@@ -29,8 +29,12 @@ class JobExecutor:
         self._state_lock = threading.Lock()  # Global state lock
     
     def _get_log_file(self, job_id: str) -> Path:
-        """Get log file path for job"""
+        """Get log file path for job (internal method)"""
         return self.log_dir / f"{job_id}.log"
+
+    def get_log_file(self, job_id: str) -> Path:
+        """Get log file path for job (public method)"""
+        return self._get_log_file(job_id)
     
     def _log_message(self, job_id: str, message: str):
         """Log message to job log file"""
@@ -73,7 +77,6 @@ class JobExecutor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                universal_newlines=True,
                 preexec_fn=os.setsid if os.name != 'nt' else None  # Create process group on Unix
             )
 
@@ -230,11 +233,16 @@ class JobExecutor:
             def retry_job():
                 time.sleep(backoff)
                 if job_id not in self.running_jobs:  # Don't retry if job was manually restarted
-                    self._update_progress(job_id, {
-                        "status": "running (retrying...)",
-                        "retry_attempt": retry_count + 1
-                    })
-                    self._execute_rsync_job(job_id, job_data)
+                    # Refetch job data to pick up any user edits made during execution
+                    fresh_job_data = self.storage.get_job(job_id)
+                    if fresh_job_data:
+                        self._update_progress(job_id, {
+                            "status": "running",
+                            "retry_attempt": retry_count + 1
+                        })
+                        self._execute_rsync_job(job_id, fresh_job_data)
+                    else:
+                        self._log_message(job_id, "Job not found for retry, skipping")
             
             retry_thread = threading.Thread(target=retry_job, daemon=True)
             retry_thread.start()

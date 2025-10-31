@@ -30,8 +30,12 @@ class RcloneExecutor:
         self._state_lock = threading.Lock()  # Global state lock
 
     def _get_log_file(self, operation_id: str) -> Path:
-        """Get log file path for operation"""
+        """Get log file path for operation (internal method)"""
         return self.log_dir / f"{operation_id}.log"
+
+    def get_log_file(self, operation_id: str) -> Path:
+        """Get log file path for operation (public method)"""
+        return self._get_log_file(operation_id)
 
     def _log_message(self, operation_id: str, message: str):
         """Log message to operation log file"""
@@ -75,7 +79,6 @@ class RcloneExecutor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                universal_newlines=True,
                 preexec_fn=os.setsid if os.name != 'nt' else None  # Create process group on Unix
             )
 
@@ -255,11 +258,16 @@ class RcloneExecutor:
             def retry_operation():
                 time.sleep(backoff)
                 if operation_id not in self.running_operations:
-                    self._update_progress(operation_id, {
-                        "status": "running (retrying...)",
-                        "retry_attempt": retry_count + 1
-                    })
-                    self._execute_rclone_operation(operation_id, operation_data)
+                    # Refetch operation data to pick up any user edits made during execution
+                    fresh_operation_data = self.storage.get_operation(operation_id)
+                    if fresh_operation_data:
+                        self._update_progress(operation_id, {
+                            "status": "running",
+                            "retry_attempt": retry_count + 1
+                        })
+                        self._execute_rclone_operation(operation_id, fresh_operation_data)
+                    else:
+                        self._log_message(operation_id, "Operation not found for retry, skipping")
 
             retry_thread = threading.Thread(target=retry_operation, daemon=True)
             retry_thread.start()
@@ -447,7 +455,7 @@ class RcloneExecutor:
             return False
 
     def cleanup_zombie_operations(self) -> int:
-        """Clean up operations that are marked as running but have no active process"""
+        """Clean up operations in problematic states (running, pending, failed preview, initializing)"""
         cleaned = 0
         operations = self.storage.get_all_operations()
 
@@ -455,21 +463,35 @@ class RcloneExecutor:
             op_id = op.get("id")
             status = op.get("status")
 
-            # Check if marked as running but not actually running
-            if status == "running":
+            # Check for various problematic states
+            problematic_statuses = ["running", "scanning", "pending_approval", "preview_failed", "initializing"]
+
+            if status in problematic_statuses:
                 with self._state_lock:
                     is_tracked = op_id in self.running_operations or op_id in self.operation_processes
 
                 if not is_tracked:
-                    # This is a zombie - mark it as failed
-                    self._log_message(op_id, "Detected zombie operation, marking as failed")
-                    self.storage.update_operation(op_id, {
-                        "status": "failed",
-                        "failed_at": datetime.now().isoformat(),
-                        "error_message": "Process terminated unexpectedly (zombie detected)"
-                    })
-                    cleaned += 1
-                    print(f"Cleaned up zombie operation: {op_id}")
+                    # Check if operation is old (> 1 hour) before cleaning up
+                    try:
+                        created_at_str = op.get("created_at", "")
+                        if created_at_str:
+                            from datetime import datetime, timedelta
+                            created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                            age = datetime.now() - created_at
+
+                            # Only clean up operations older than 1 hour
+                            if age > timedelta(hours=1):
+                                # This is a zombie - mark it as failed
+                                self._log_message(op_id, f"Cleaning up zombie operation (status: {status}, age: {age})")
+                                self.storage.update_operation(op_id, {
+                                    "status": "failed",
+                                    "failed_at": datetime.now().isoformat(),
+                                    "error_message": f"Operation cleaned up as zombie (status: {status}, age: {age})"
+                                })
+                                cleaned += 1
+                                print(f"Cleaned up zombie operation: {op_id} (status: {status}, age: {age})")
+                    except Exception as e:
+                        print(f"Error checking operation age for {op_id}: {e}")
 
         return cleaned
 
@@ -640,7 +662,8 @@ class RcloneExecutor:
             # Force dry-run and stats flags
             preview_args = rclone_args.copy()
             preview_args["dry_run"] = True
-            preview_args["stats"] = "0"  # Show stats at end only
+            preview_args["stats"] = True  # Enable stats
+            preview_args["stats_interval"] = "0"  # Show stats at end only
             preview_args["stats_one_line"] = False  # We want multi-line for parsing
             preview_args["verbose"] = True  # Get detailed output
 
@@ -655,7 +678,7 @@ class RcloneExecutor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=60  # 60 second timeout
+                timeout=300  # 5 minute timeout for large operations
             )
 
             # Parse output
@@ -701,11 +724,12 @@ class RcloneExecutor:
             return stats
 
         except subprocess.TimeoutExpired:
-            print("Dry-run preview timed out after 60 seconds")
+            print("Dry-run preview timed out after 300 seconds")
             return {
                 "success": False,
-                "error": "Preview timed out after 60 seconds. The operation may be very large.",
-                "timeout": True
+                "error": "Preview timed out after 5 minutes. The operation may be very large.",
+                "timeout": True,
+                "allow_skip": True  # Allow user to skip preview and proceed
             }
         except Exception as e:
             print(f"Error running dry-run preview: {e}")

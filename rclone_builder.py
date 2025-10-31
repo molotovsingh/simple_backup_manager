@@ -31,9 +31,6 @@ def build_rclone_command(operation: str, source: str, destination: str,
     if args.get("dry_run"):
         command.append("--dry-run")
 
-    if args.get("json"):
-        command.append("--json")
-
     # Add operation-specific options
     if operation == "sync":
         if args.get("delete"):
@@ -59,9 +56,6 @@ def build_rclone_command(operation: str, source: str, destination: str,
     checkers = args.get("checkers")
     if checkers and str(checkers).strip():
         command.extend(["--checkers", str(checkers)])
-
-    if args.get("checkers_do_open"):
-        command.append("--checkers-do-open")
 
     # Add bandwidth limiting
     bwlimit = args.get("bwlimit")
@@ -197,7 +191,6 @@ def get_default_rclone_args() -> Dict[str, Any]:
         "verbose": True,
         "progress": True,
         "dry_run": False,
-        "json": False,
         "delete": False,
         "checksum": False,
         "ignore_times": False,
@@ -205,7 +198,6 @@ def get_default_rclone_args() -> Dict[str, Any]:
         # Performance options
         "transfers": "4",
         "checkers": "8",
-        "checkers_do_open": False,
         "bwlimit": "",
         
         # Sync options

@@ -26,7 +26,7 @@ A simple, robust solution for managing and restarting failed rsync backup jobs.
    ```
 
 3. **Open in browser:**
-   Navigate to http://localhost:5000
+   Navigate to http://localhost:8080
 
 ## Usage
 
@@ -82,6 +82,39 @@ Jobs are stored in `jobs.json`. Each job includes:
 - Status and progress tracking
 - Error messages and logs
 
+### Environment Variables
+
+The application can be configured using the following environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLASK_HOST` | `127.0.0.1` | Host address to bind to. Use `0.0.0.0` to allow external connections. |
+| `FLASK_PORT` | `8080` | Port number for the web interface. |
+| `FLASK_DEBUG` | `false` | Enable Flask debug mode. **WARNING: Never use in production!** |
+| `DEMO_SEED` | `false` | Create sample demo jobs on first startup. |
+
+**Example Usage:**
+
+```bash
+# Run on all interfaces with custom port
+export FLASK_HOST=0.0.0.0
+export FLASK_PORT=5000
+python app.py
+
+# Enable demo mode for testing
+export DEMO_SEED=true
+python app.py
+
+# Enable debug mode (development only!)
+export FLASK_DEBUG=true
+python app.py
+```
+
+**Security Notes:**
+- Never use `FLASK_DEBUG=true` in production environments
+- Binding to `0.0.0.0` exposes the application to your network
+- Consider using a reverse proxy (nginx, Apache) for production deployments
+
 ## Retry Logic
 
 - **Exponential Backoff**: 1s, 2s, 4s, 8s, 16s, max 60s
@@ -118,6 +151,44 @@ The application is designed to be simple and robust:
 - **Simple deployment** - single Python file
 - **Clear error messages** - easy debugging
 - **Responsive design** - works on mobile and desktop
+
+### Running Tests
+
+The project includes comprehensive test suites to ensure code quality:
+
+```bash
+# Run all test suites
+python test_sse.py                  # SSE endpoint tests
+python test_status_strings.py       # Status enumeration tests
+python test_validation.py           # Security and validation tests
+python test_rclone_commands.py      # Command builder tests
+
+# Run existing tests
+python test_storage_safety.py       # Storage thread safety tests
+python test_automation.py           # API integration tests
+```
+
+**Test Coverage:**
+- **SSE Implementation**: Content type, headers, heartbeat behavior
+- **Status Strings**: Enumeration, CSS class generation, JavaScript compatibility
+- **Security**: Path traversal, dangerous paths, input validation
+- **Command Building**: Rclone command generation, flag validation
+- **Storage Safety**: Thread safety, atomic operations, data integrity
+- **API Integration**: End-to-end functionality testing
+
+### Exclude Patterns
+
+When specifying exclude patterns for rsync, you can now use newline-separated patterns to handle patterns with spaces:
+
+```
+# Newline-separated (supports spaces in patterns)
+My Documents/
+*.tmp
+node_modules
+
+# Space-separated (legacy, no spaces in patterns)
+*.tmp *.log .DS_Store
+```
 
 ## License
 

@@ -1,2 +1,2 @@
 Flask==2.3.3
-pathlib2==2.3.7
+requests>=2.31.0

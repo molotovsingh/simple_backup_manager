@@ -45,9 +45,14 @@ class FrontendTester:
                 response = self.session.delete(url)
             else:
                 raise ValueError(f"Unsupported method: {method}")
-                
-            response_data = response.json() if response.content else {}
-            
+
+            # Only parse JSON if Content-Type is JSON (avoid errors on HTML endpoints)
+            content_type = response.headers.get('Content-Type', '')
+            if response.content and 'application/json' in content_type:
+                response_data = response.json()
+            else:
+                response_data = {}
+
             if response.status_code == expected_status:
                 return {"success": True, "data": response_data}
             else:

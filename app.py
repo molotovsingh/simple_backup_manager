@@ -1,8 +1,9 @@
 """
 Simple Flask web application for job restart manager
 """
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, request, jsonify
 import json
+import os
 from datetime import datetime
 from job_storage import JobStorage
 from job_executor import JobExecutor
@@ -11,6 +12,7 @@ from rclone_storage import RcloneStorage
 from rclone_executor import RcloneExecutor
 from rclone_config import RcloneConfig
 from rclone_builder import get_default_rclone_args, validate_rclone_args
+from validation_utils import validate_job_data, validate_operation_data
 
 
 app = Flask(__name__)
@@ -66,25 +68,26 @@ def api_create_job():
     """API endpoint to create new job"""
     try:
         data = request.get_json()
-        
-        # Validate required fields
-        if not data.get('name') or not data.get('source') or not data.get('destination'):
-            return jsonify({"error": "Name, source, and destination are required"}), 400
-        
-        # Create job with default rsync args
+
+        # Create job data with defaults
         job_data = {
-            "name": data['name'],
-            "source": data['source'],
-            "destination": data['destination'],
+            "name": data.get('name', ''),
+            "source": data.get('source', ''),
+            "destination": data.get('destination', ''),
             "rsync_args": data.get('rsync_args', get_default_rsync_args()),
             "excludes": data.get('excludes', ''),
             "max_retries": data.get('max_retries', 5)
         }
-        
+
+        # Validate job data (including path security checks)
+        is_valid, errors = validate_job_data(job_data, validate_paths=True)
+        if not is_valid:
+            return jsonify({"error": "Validation failed", "errors": errors}), 400
+
         job_id = storage.create_job(job_data)
-        
+
         return jsonify({"job_id": job_id, "message": "Job created successfully"})
-        
+
     except Exception as e:
         return jsonify({"error": f"Failed to create job: {str(e)}"}), 500
 
@@ -192,7 +195,7 @@ def api_delete_job(job_id):
 def api_job_logs(job_id):
     """API endpoint to get job logs"""
     try:
-        log_file = executor._get_log_file(job_id)
+        log_file = executor.get_log_file(job_id)
         if log_file.exists():
             with open(log_file, 'r') as f:
                 logs = f.read()
@@ -261,7 +264,7 @@ def progress_stream():
             # Get running jobs and their progress
             running_jobs = executor.get_running_jobs()
             progress_data = []
-            
+
             for job_id in running_jobs:
                 job = storage.get_job(job_id)
                 if job and 'progress' in job:
@@ -269,15 +272,22 @@ def progress_stream():
                         'job_id': job_id,
                         'progress': job['progress']
                     })
-            
+
             if progress_data:
                 yield f"data: {json.dumps(progress_data)}\n\n"
-            
+            else:
+                # Send heartbeat to keep connection alive
+                yield ":\n\n"
+
             # Send update every 2 seconds
             import time
             time.sleep(2)
-    
-    return app.response_class(generate(), mimetype='text/plain')
+
+    return app.response_class(
+        generate(),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    )
 
 
 # ==================== RCLONE API ENDPOINTS ====================
@@ -315,30 +325,28 @@ def api_create_rclone_operation():
     """Create new rclone operation"""
     try:
         data = request.get_json()
-        
-        # Validate required fields
-        if not data.get('name') or not data.get('source') or not data.get('destination'):
-            return jsonify({"error": "Name, source, and destination are required"}), 400
-        
-        if not data.get('operation_type'):
-            return jsonify({"error": "Operation type is required"}), 400
-        
-        # Create operation with default rclone args
+
+        # Create operation data with defaults
         operation_data = {
-            "name": data['name'],
-            "source": data['source'],
-            "destination": data['destination'],
-            "operation_type": data['operation_type'],
+            "name": data.get('name', ''),
+            "source": data.get('source', ''),
+            "destination": data.get('destination', ''),
+            "operation_type": data.get('operation_type', ''),
             "rclone_args": data.get('rclone_args', get_default_rclone_args()),
             "excludes": data.get('excludes', ''),
             "max_retries": data.get('max_retries', 3)
         }
-        
+
+        # Validate operation data (paths may be remote, so validate_paths=False)
+        is_valid, errors = validate_operation_data(operation_data, validate_paths=False)
+        if not is_valid:
+            return jsonify({"error": "Validation failed", "errors": errors}), 400
+
         operation_id = rclone_storage.create_operation(operation_data)
         rclone_executor.start_operation(operation_id)
-        
+
         return jsonify({"operation_id": operation_id, "message": "Operation created and started"})
-        
+
     except Exception as e:
         return jsonify({"error": f"Failed to create operation: {str(e)}"}), 500
 
@@ -431,21 +439,7 @@ def api_create_rclone_operation_with_preview():
         rclone_args = data.get('rclone_args', get_default_rclone_args())
         excludes = data.get('excludes', '')
 
-        # Run dry-run preview
-        print(f"Running preview for {operation_type}: {source} -> {destination}")
-        preview_stats = rclone_executor.run_dry_run_preview(
-            operation_type, source, destination, rclone_args, excludes
-        )
-
-        if not preview_stats or not preview_stats.get('success'):
-            error_msg = preview_stats.get('error', 'Preview failed') if preview_stats else 'Preview failed'
-            return jsonify({
-                "success": False,
-                "error": error_msg,
-                "timeout": preview_stats.get('timeout', False) if preview_stats else False
-            }), 400
-
-        # Create operation with pending_approval status
+        # Create operation FIRST (before preview) so it's preserved on failure
         operation_data = {
             "name": data['name'],
             "source": source,
@@ -454,10 +448,44 @@ def api_create_rclone_operation_with_preview():
             "rclone_args": rclone_args,
             "excludes": excludes,
             "max_retries": data.get('max_retries', 3),
-            "status": "pending_approval"
+            "status": "initializing"  # Initial status before preview
         }
 
         operation_id = rclone_storage.create_operation(operation_data)
+
+        # Run dry-run preview
+        print(f"Running preview for {operation_type}: {source} -> {destination}")
+        preview_stats = rclone_executor.run_dry_run_preview(
+            operation_type, source, destination, rclone_args, excludes
+        )
+
+        if not preview_stats or not preview_stats.get('success'):
+            error_msg = preview_stats.get('error', 'Preview failed') if preview_stats else 'Preview failed'
+
+            # Add context for move operations
+            if operation_type == "move":
+                error_msg += " Move operations may have limited preview functionality."
+
+            # Update operation status but KEEP the operation
+            rclone_storage.update_operation(operation_id, {
+                "status": "preview_failed",
+                "error_message": error_msg
+            })
+
+            # Return operation_id so user can still proceed (200 instead of 400)
+            return jsonify({
+                "success": False,
+                "error": error_msg,
+                "timeout": preview_stats.get('timeout', False) if preview_stats else False,
+                "operation_id": operation_id,  # NEW: Return operation ID
+                "allow_proceed": preview_stats.get('allow_skip', True) if preview_stats else True,  # NEW: Allow proceeding
+                "operation_type": operation_type
+            }), 200  # Changed from 400 to preserve operation
+
+        # Update operation to pending_approval on success
+        rclone_storage.update_operation(operation_id, {
+            "status": "pending_approval"
+        })
 
         return jsonify({
             "success": True,
@@ -518,7 +546,7 @@ def api_approve_rclone_operation(operation_id):
 def api_rclone_operation_logs(operation_id):
     """Get rclone operation logs"""
     try:
-        log_file = rclone_executor._get_log_file(operation_id)
+        log_file = rclone_executor.get_log_file(operation_id)
         if log_file.exists():
             with open(log_file, 'r') as f:
                 logs = f.read()
@@ -647,8 +675,8 @@ if __name__ == '__main__':
     else:
         print("  ✓ No zombie processes found")
 
-    # Create some sample jobs if none exist
-    if not storage.get_all_jobs():
+    # Create some sample jobs if none exist (only when DEMO_SEED=true)
+    if os.getenv('DEMO_SEED', 'false').lower() == 'true' and not storage.get_all_jobs():
         sample_jobs = [
             {
                 "name": "Documents Backup",
@@ -686,7 +714,14 @@ if __name__ == '__main__':
         for job_data in sample_jobs:
             storage.create_job(job_data)
 
-        print("Created sample jobs for demonstration")
+        print("Created sample jobs for demonstration (DEMO_SEED=true)")
 
-    print("Starting Job Restart Manager on http://localhost:8080")
-    app.run(debug=True, host='0.0.0.0', port=8080)
+    # Get Flask settings from environment variables (with safe defaults)
+    debug = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+    host = os.getenv('FLASK_HOST', '127.0.0.1')
+    port = int(os.getenv('FLASK_PORT', '8080'))
+
+    print(f"Starting Job Restart Manager on http://{host}:{port}")
+    if debug:
+        print("⚠️  WARNING: Debug mode is enabled - do not use in production!")
+    app.run(debug=debug, host=host, port=port)

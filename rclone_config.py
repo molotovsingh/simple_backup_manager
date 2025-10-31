@@ -155,7 +155,6 @@ class RcloneConfig:
             "dropbox",
             "b2",
             "azureblob",
-            "gdrive",
             "sftp",
             "ftp",
             "http",

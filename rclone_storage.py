@@ -364,7 +364,7 @@ class RcloneStorage:
         return [
             "s3",
             "dropbox",
-            "google_cloud_storage",
+            "google cloud storage",
             "azure_blob",
             "b2",
             "sftp",
