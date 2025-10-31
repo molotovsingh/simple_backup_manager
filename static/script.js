@@ -762,10 +762,10 @@ function closeRcloneLogsModal() {
     document.getElementById('rclone-logs-modal').style.display = 'none';
 }
 
-// Handle rclone operation creation
+// Handle rclone operation creation (with preview)
 async function handleCreateRcloneOperation(event) {
     event.preventDefault();
-    
+
     const formData = new FormData(event.target);
     const operationData = {
         name: formData.get('name'),
@@ -806,19 +806,204 @@ async function handleCreateRcloneOperation(event) {
             max_delete: formData.get('max_delete')
         }
     };
-    
+
+    // Show preview modal with loading state
+    showPreviewLoading();
+
     try {
-        const result = await apiCall('/api/rclone/operation', {
+        const result = await apiCall('/api/rclone/operation/create-with-preview', {
             method: 'POST',
             body: JSON.stringify(operationData)
         });
-        
-        showStatus('Rclone operation created and started', 'success');
-        closeRcloneModal();
-        setTimeout(loadRcloneOperations, 1000);
+
+        if (result.success) {
+            showPreviewResults(result.operation_id, result.stats);
+        } else {
+            showPreviewError(result.error, result.timeout);
+        }
     } catch (error) {
-        console.error('Failed to create rclone operation:', error);
+        console.error('Failed to create preview:', error);
+        showPreviewError(error.message || 'Failed to analyze transfer');
     }
+}
+
+// Show preview modal in loading state
+function showPreviewLoading() {
+    const modal = document.getElementById('preview-modal');
+    const loading = document.getElementById('preview-loading');
+    const results = document.getElementById('preview-results');
+    const errorDiv = document.getElementById('preview-error');
+
+    loading.style.display = 'block';
+    results.style.display = 'none';
+    errorDiv.style.display = 'none';
+    modal.style.display = 'block';
+
+    // Optional: Update progress text every few seconds
+    let elapsed = 0;
+    const progressText = document.getElementById('preview-progress-text');
+    const interval = setInterval(() => {
+        elapsed += 3;
+        if (elapsed < 60) {
+            progressText.textContent = `Scanning... ${elapsed}s elapsed`;
+        } else {
+            clearInterval(interval);
+            progressText.textContent = 'This is taking longer than expected...';
+        }
+    }, 3000);
+
+    // Store interval ID for cleanup
+    modal.dataset.progressInterval = interval;
+}
+
+// Show preview results
+function showPreviewResults(operationId, stats) {
+    // Clear progress interval
+    const modal = document.getElementById('preview-modal');
+    if (modal.dataset.progressInterval) {
+        clearInterval(parseInt(modal.dataset.progressInterval));
+    }
+
+    const loading = document.getElementById('preview-loading');
+    const results = document.getElementById('preview-results');
+    const errorDiv = document.getElementById('preview-error');
+
+    loading.style.display = 'none';
+    results.style.display = 'block';
+    errorDiv.style.display = 'none';
+
+    // Populate stats
+    document.getElementById('preview-files').textContent =
+        (stats.files_to_transfer || 0).toLocaleString();
+    document.getElementById('preview-size').textContent =
+        stats.size_formatted || '0 B';
+    document.getElementById('preview-eta').textContent =
+        stats.estimated_time || 'Unknown';
+    document.getElementById('preview-checks').textContent =
+        (stats.files_to_check || 0).toLocaleString();
+
+    // Populate details
+    document.getElementById('preview-transfer-type').textContent =
+        stats.transfer_type || 'unknown';
+    document.getElementById('preview-speed').textContent =
+        stats.speed_estimate || 'Unknown';
+    document.getElementById('preview-scan-time').textContent =
+        stats.scan_time ? `${stats.scan_time.toFixed(1)}s` : 'Unknown';
+
+    // Show warnings if any
+    const warningsDiv = document.getElementById('preview-warnings');
+    if (stats.warnings && stats.warnings.length > 0) {
+        warningsDiv.innerHTML = stats.warnings.map(w =>
+            `<div class="warning-item">${w}</div>`
+        ).join('');
+        warningsDiv.style.display = 'block';
+    } else {
+        warningsDiv.style.display = 'none';
+    }
+
+    // Store operation ID for approval
+    document.getElementById('proceed-btn').dataset.operationId = operationId;
+}
+
+// Show preview error
+function showPreviewError(errorMessage, isTimeout = false) {
+    // Clear progress interval
+    const modal = document.getElementById('preview-modal');
+    if (modal.dataset.progressInterval) {
+        clearInterval(parseInt(modal.dataset.progressInterval));
+    }
+
+    const loading = document.getElementById('preview-loading');
+    const results = document.getElementById('preview-results');
+    const errorDiv = document.getElementById('preview-error');
+    const errorMsg = document.getElementById('preview-error-message');
+
+    loading.style.display = 'none';
+    results.style.display = 'none';
+    errorDiv.style.display = 'block';
+
+    if (isTimeout) {
+        errorMsg.innerHTML = `
+            <strong>Preview Timeout</strong><br>
+            ${errorMessage}<br><br>
+            The operation may be very large. You can try again or proceed without preview.
+        `;
+    } else {
+        errorMsg.textContent = errorMessage;
+    }
+}
+
+// Approve and start the pending transfer
+async function approvePendingTransfer() {
+    const btn = document.getElementById('proceed-btn');
+    const operationId = btn.dataset.operationId;
+
+    if (!operationId) {
+        showStatus('No operation to approve', 'error');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Starting...';
+
+    try {
+        const result = await apiCall(`/api/rclone/operation/${operationId}/approve`, {
+            method: 'POST'
+        });
+
+        if (result.success) {
+            showStatus('Transfer approved and started', 'success');
+            closePreviewModal();
+            closeRcloneModal();
+            setTimeout(loadRcloneOperations, 1000);
+        } else {
+            showStatus(result.error || 'Failed to start transfer', 'error');
+            btn.disabled = false;
+            btn.textContent = '✓ Proceed with Transfer';
+        }
+    } catch (error) {
+        console.error('Failed to approve transfer:', error);
+        showStatus('Failed to start transfer', 'error');
+        btn.disabled = false;
+        btn.textContent = '✓ Proceed with Transfer';
+    }
+}
+
+// Cancel preview
+async function cancelPreview() {
+    const btn = document.getElementById('proceed-btn');
+    const operationId = btn.dataset.operationId;
+
+    if (operationId) {
+        // Delete the pending operation
+        try {
+            await apiCall(`/api/rclone/operation/${operationId}/delete`, {
+                method: 'DELETE'
+            });
+        } catch (error) {
+            console.error('Failed to delete pending operation:', error);
+        }
+    }
+
+    closePreviewModal();
+}
+
+// Close preview modal
+function closePreviewModal() {
+    // Clear progress interval
+    const modal = document.getElementById('preview-modal');
+    if (modal.dataset.progressInterval) {
+        clearInterval(parseInt(modal.dataset.progressInterval));
+        delete modal.dataset.progressInterval;
+    }
+
+    modal.style.display = 'none';
+
+    // Reset button
+    const btn = document.getElementById('proceed-btn');
+    btn.disabled = false;
+    btn.textContent = '✓ Proceed with Transfer';
+    delete btn.dataset.operationId;
 }
 
 // Rclone operations

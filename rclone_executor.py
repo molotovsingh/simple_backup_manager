@@ -487,3 +487,229 @@ class RcloneExecutor:
         """Check if an operation is currently paused"""
         with self._state_lock:
             return self.paused_operations.get(operation_id, False)
+
+    def get_transfer_size(self, path: str) -> Optional[Dict[str, Any]]:
+        """Get size of files at path using rclone size --json"""
+        try:
+            command = ["rclone", "size", "--json", path]
+
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode == 0:
+                try:
+                    data = json.loads(result.stdout)
+                    return {
+                        "count": data.get("count", 0),
+                        "bytes": data.get("bytes", 0),
+                        "size_formatted": self._format_bytes(data.get("bytes", 0))
+                    }
+                except json.JSONDecodeError:
+                    return None
+            else:
+                print(f"rclone size failed: {result.stderr}")
+                return None
+
+        except subprocess.TimeoutExpired:
+            print(f"rclone size timed out for {path}")
+            return None
+        except Exception as e:
+            print(f"Error getting transfer size: {e}")
+            return None
+
+    def _format_bytes(self, bytes_count: int) -> str:
+        """Format bytes into human-readable string"""
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if bytes_count < 1024.0:
+                return f"{bytes_count:.2f} {unit}"
+            bytes_count /= 1024.0
+        return f"{bytes_count:.2f} PB"
+
+    def estimate_transfer_time(self, size_bytes: int, source: str, destination: str) -> Dict[str, Any]:
+        """Estimate transfer time based on source/destination types and size"""
+        # Determine transfer type
+        is_source_remote = ":" in source
+        is_dest_remote = ":" in destination
+
+        # Set speed estimates in bytes/second
+        if not is_source_remote and not is_dest_remote:
+            # Local to local
+            speed_bps = 100 * 1024 * 1024  # 100 MB/s
+            transfer_type = "local"
+        elif is_source_remote and is_dest_remote:
+            # Cloud to cloud
+            speed_bps = 5 * 1024 * 1024  # 5 MB/s
+            transfer_type = "cloud"
+        else:
+            # Local to cloud or cloud to local
+            speed_bps = 10 * 1024 * 1024  # 10 MB/s
+            transfer_type = "hybrid"
+
+        # Calculate time in seconds
+        if size_bytes > 0 and speed_bps > 0:
+            time_seconds = size_bytes / speed_bps
+
+            # Format time
+            if time_seconds < 60:
+                time_formatted = f"~{int(time_seconds)} seconds"
+            elif time_seconds < 3600:
+                minutes = int(time_seconds / 60)
+                time_formatted = f"~{minutes} minute{'s' if minutes != 1 else ''}"
+            else:
+                hours = time_seconds / 3600
+                time_formatted = f"~{hours:.1f} hour{'s' if hours >= 2 else ''}"
+        else:
+            time_seconds = 0
+            time_formatted = "Unknown"
+
+        return {
+            "seconds": time_seconds,
+            "formatted": time_formatted,
+            "speed_bps": speed_bps,
+            "speed_formatted": self._format_bytes(speed_bps) + "/s",
+            "transfer_type": transfer_type
+        }
+
+    def _parse_dry_run_output(self, output: str) -> Dict[str, Any]:
+        """Parse rclone dry-run output for statistics"""
+        import re
+
+        stats = {
+            "files_to_transfer": 0,
+            "files_to_check": 0,
+            "files_to_delete": 0,
+            "bytes_transferred": 0,
+            "scan_time": 0.0,
+            "errors": 0
+        }
+
+        lines = output.split('\n')
+
+        for line in lines:
+            # Parse: "Transferred:         125 / 125, 100%"
+            if line.strip().startswith("Transferred:") and "/" in line:
+                match = re.search(r'(\d+)\s*/\s*(\d+)', line)
+                if match:
+                    current = int(match.group(1))
+                    total = int(match.group(2))
+                    # Use total if it's the final count
+                    if current == total or "100%" in line:
+                        stats["files_to_transfer"] = total
+
+            # Parse: "Checks:              150 / 150, 100%"
+            if line.strip().startswith("Checks:"):
+                match = re.search(r'(\d+)\s*/\s*(\d+)', line)
+                if match:
+                    current = int(match.group(1))
+                    total = int(match.group(2))
+                    if current == total or "100%" in line:
+                        stats["files_to_check"] = total
+
+            # Parse: "Deleted:               5 (files), 0 (dirs)"
+            if line.strip().startswith("Deleted:"):
+                match = re.search(r'(\d+)\s*\(files\)', line)
+                if match:
+                    stats["files_to_delete"] = int(match.group(1))
+
+            # Parse: "Elapsed time:         5.2s"
+            if "Elapsed time:" in line:
+                match = re.search(r'(\d+\.?\d*)s', line)
+                if match:
+                    stats["scan_time"] = float(match.group(1))
+
+            # Parse: "Errors:               119"
+            if line.strip().startswith("Errors:"):
+                match = re.search(r'Errors:\s+(\d+)', line)
+                if match:
+                    stats["errors"] = int(match.group(1))
+
+        return stats
+
+    def run_dry_run_preview(self, operation_type: str, source: str, destination: str,
+                           rclone_args: Dict[str, Any], excludes: str) -> Optional[Dict[str, Any]]:
+        """Run rclone dry-run to preview transfer statistics"""
+        try:
+            # Get source size first for accurate estimates
+            size_info = self.get_transfer_size(source)
+
+            # Force dry-run and stats flags
+            preview_args = rclone_args.copy()
+            preview_args["dry_run"] = True
+            preview_args["stats"] = "0"  # Show stats at end only
+            preview_args["stats_one_line"] = False  # We want multi-line for parsing
+            preview_args["verbose"] = True  # Get detailed output
+
+            # Build command
+            command = build_rclone_command(operation_type, source, destination, preview_args, excludes)
+
+            print(f"Running preview command: {' '.join(command)}")
+
+            # Execute dry-run with timeout
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=60  # 60 second timeout
+            )
+
+            # Parse output
+            output = result.stdout
+            stats = self._parse_dry_run_output(output)
+
+            # Add size information
+            if size_info:
+                stats["size_bytes"] = size_info["bytes"]
+                stats["size_formatted"] = size_info["size_formatted"]
+                stats["file_count"] = size_info["count"]
+            else:
+                stats["size_bytes"] = 0
+                stats["size_formatted"] = "Unknown"
+                stats["file_count"] = 0
+
+            # Estimate transfer time
+            time_estimate = self.estimate_transfer_time(
+                stats.get("size_bytes", 0),
+                source,
+                destination
+            )
+            stats["estimated_time"] = time_estimate["formatted"]
+            stats["estimated_seconds"] = time_estimate["seconds"]
+            stats["speed_estimate"] = time_estimate["speed_formatted"]
+            stats["transfer_type"] = time_estimate["transfer_type"]
+
+            # Generate warnings
+            warnings = []
+            if stats["files_to_delete"] > 0:
+                warnings.append(f"⚠️ This operation will DELETE {stats['files_to_delete']} files from destination")
+            if operation_type == "move":
+                warnings.append(f"⚠️ Move operation will REMOVE source files after transfer")
+            if stats["errors"] > 0:
+                warnings.append(f"⚠️ Dry-run encountered {stats['errors']} errors - check logs before proceeding")
+            if rclone_args.get("delete"):
+                warnings.append("⚠️ --delete flag is enabled")
+
+            stats["warnings"] = warnings
+            stats["command"] = " ".join(command)
+            stats["success"] = result.returncode == 0
+
+            return stats
+
+        except subprocess.TimeoutExpired:
+            print("Dry-run preview timed out after 60 seconds")
+            return {
+                "success": False,
+                "error": "Preview timed out after 60 seconds. The operation may be very large.",
+                "timeout": True
+            }
+        except Exception as e:
+            print(f"Error running dry-run preview: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }

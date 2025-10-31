@@ -821,7 +821,7 @@
                     </div>
                     
                     <div class="form-actions">
-                        <button type="submit" class="btn btn-primary">Create & Start</button>
+                        <button type="submit" class="btn btn-primary btn-large">🔍 Analyze Transfer</button>
                         <button type="button" class="btn btn-secondary" onclick="closeRcloneModal()">Cancel</button>
                     </div>
                 </form>
@@ -837,6 +837,75 @@
                 </div>
                 <div class="logs-content">
                     <pre id="rclone-logs-text">Loading logs...</pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Preview Modal -->
+        <div id="preview-modal" class="modal" style="display: none;">
+            <div class="modal-content preview-modal-content">
+                <span class="close" onclick="closePreviewModal()">&times;</span>
+                <h2>📊 Transfer Preview</h2>
+
+                <!-- Loading State -->
+                <div id="preview-loading" class="preview-loading">
+                    <div class="spinner"></div>
+                    <p>Analyzing transfer... This may take up to 60 seconds.</p>
+                    <p class="preview-progress" id="preview-progress-text"></p>
+                </div>
+
+                <!-- Results State -->
+                <div id="preview-results" class="preview-results" style="display: none;">
+                    <div class="preview-stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">Files to Transfer</div>
+                            <div class="stat-value" id="preview-files">0</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Total Size</div>
+                            <div class="stat-value" id="preview-size">0 B</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Estimated Time</div>
+                            <div class="stat-value" id="preview-eta">Unknown</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Files to Check</div>
+                            <div class="stat-value" id="preview-checks">0</div>
+                        </div>
+                    </div>
+
+                    <!-- Additional Info -->
+                    <div class="preview-details">
+                        <div class="detail-row">
+                            <strong>Transfer Type:</strong> <span id="preview-transfer-type">-</span>
+                        </div>
+                        <div class="detail-row">
+                            <strong>Speed Estimate:</strong> <span id="preview-speed">-</span>
+                        </div>
+                        <div class="detail-row">
+                            <strong>Scan Time:</strong> <span id="preview-scan-time">-</span>
+                        </div>
+                    </div>
+
+                    <!-- Warnings -->
+                    <div id="preview-warnings" class="preview-warnings" style="display: none;"></div>
+
+                    <!-- Actions -->
+                    <div class="preview-actions">
+                        <button class="btn btn-success btn-large" id="proceed-btn" onclick="approvePendingTransfer()">
+                            ✓ Proceed with Transfer
+                        </button>
+                        <button class="btn btn-secondary" onclick="cancelPreview()">
+                            ✗ Cancel
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Error State -->
+                <div id="preview-error" class="preview-error" style="display: none;">
+                    <p class="error-message" id="preview-error-message"></p>
+                    <button class="btn btn-secondary" onclick="closePreviewModal()">Close</button>
                 </div>
             </div>
         </div>

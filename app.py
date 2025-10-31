@@ -412,6 +412,108 @@ def api_delete_rclone_operation(operation_id):
         return jsonify({"error": f"Failed to delete operation: {str(e)}"}), 500
 
 
+@app.route('/api/rclone/operation/create-with-preview', methods=['POST'])
+def api_create_rclone_operation_with_preview():
+    """Create rclone operation with dry-run preview"""
+    try:
+        data = request.get_json()
+
+        # Validate required fields
+        if not data.get('name') or not data.get('source') or not data.get('destination'):
+            return jsonify({"error": "Name, source, and destination are required"}), 400
+
+        if not data.get('operation_type'):
+            return jsonify({"error": "Operation type is required"}), 400
+
+        operation_type = data['operation_type']
+        source = data['source']
+        destination = data['destination']
+        rclone_args = data.get('rclone_args', get_default_rclone_args())
+        excludes = data.get('excludes', '')
+
+        # Run dry-run preview
+        print(f"Running preview for {operation_type}: {source} -> {destination}")
+        preview_stats = rclone_executor.run_dry_run_preview(
+            operation_type, source, destination, rclone_args, excludes
+        )
+
+        if not preview_stats or not preview_stats.get('success'):
+            error_msg = preview_stats.get('error', 'Preview failed') if preview_stats else 'Preview failed'
+            return jsonify({
+                "success": False,
+                "error": error_msg,
+                "timeout": preview_stats.get('timeout', False) if preview_stats else False
+            }), 400
+
+        # Create operation with pending_approval status
+        operation_data = {
+            "name": data['name'],
+            "source": source,
+            "destination": destination,
+            "operation_type": operation_type,
+            "rclone_args": rclone_args,
+            "excludes": excludes,
+            "max_retries": data.get('max_retries', 3),
+            "status": "pending_approval"
+        }
+
+        operation_id = rclone_storage.create_operation(operation_data)
+
+        return jsonify({
+            "success": True,
+            "operation_id": operation_id,
+            "stats": preview_stats,
+            "message": "Preview complete - awaiting approval"
+        })
+
+    except Exception as e:
+        print(f"Error in create-with-preview: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": f"Failed to create preview: {str(e)}"
+        }), 500
+
+
+@app.route('/api/rclone/operation/<operation_id>/approve', methods=['POST'])
+def api_approve_rclone_operation(operation_id):
+    """Approve and start a pending rclone operation"""
+    try:
+        # Get operation
+        operation = rclone_storage.get_operation(operation_id)
+        if not operation:
+            return jsonify({"error": f"Operation {operation_id} not found"}), 404
+
+        # Check if it's pending approval
+        if operation.get('status') != 'pending_approval':
+            return jsonify({
+                "error": f"Operation {operation_id} is not pending approval (status: {operation.get('status')})"
+            }), 400
+
+        # Update status to created
+        rclone_storage.update_operation(operation_id, {"status": "created"})
+
+        # Start the operation
+        if rclone_executor.start_operation(operation_id):
+            return jsonify({
+                "success": True,
+                "message": f"Operation {operation_id} approved and started successfully"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"Failed to start operation {operation_id}"
+            }), 400
+
+    except Exception as e:
+        print(f"Error approving operation: {e}")
+        return jsonify({
+            "success": False,
+            "error": f"Failed to approve operation: {str(e)}"
+        }), 500
+
+
 @app.route('/api/rclone/operation/<operation_id>/logs')
 def api_rclone_operation_logs(operation_id):
     """Get rclone operation logs"""
